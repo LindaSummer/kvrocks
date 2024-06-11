@@ -18,16 +18,22 @@
  *
  */
 
+#include <cstdint>
 #include <memory>
 #include <stdexcept>
+#include <string>
+#include <vector>
 
 #include "command_parser.h"
 #include "commander.h"
 #include "error_constants.h"
 #include "event_util.h"
+#include "server/redis_reply.h"
 #include "server/server.h"
+#include "status.h"
 #include "time_util.h"
 #include "types/redis_stream.h"
+#include "types/redis_stream_base.h"
 
 namespace redis {
 
@@ -356,6 +362,88 @@ class CommandXClaim : public Commander {
     static const std::unordered_set<std::string> options = {"idle", "time", "retrycount", "force", "justid", "lastid"};
     return options.find(util::ToLower(arg)) != options.end();
   }
+};
+
+class CommandAutoClaim : public Commander {
+ public:
+  Status Parse(const std::vector<std::string> &args) override {
+    CommandParser parser(args, 1);
+    key_name_ = GET_OR_RET(parser.TakeStr());
+    group_name_ = GET_OR_RET(parser.TakeStr());
+    consumer_name_ = GET_OR_RET(parser.TakeStr());
+    {
+      auto s = parser.TakeInt<uint64_t>();
+      if (!s.IsOK()) {
+        return {Status::RedisParseErr, "Invalid min-idle-time argument for XAUTOCLAIM"};
+      }
+      options_.min_idle_time_ms = s.GetValue();
+    }
+    {
+      auto start_str = GET_OR_RET(parser.TakeStr());
+      if (!start_str.empty() && start_str.front() == '(') {
+        options_.exclude_start = true;
+        start_str = start_str.substr(1);
+      }
+      auto s = ParseRangeStart(start_str, &start_entry_id_);
+      if (!s.IsOK()) {
+        return s;
+      }
+    }
+
+    if (parser.EatEqICase("count")) {
+      options_.count = GET_OR_RET(parser.TakeInt<uint64_t>());
+    }
+
+    if (parser.Good() && parser.EatEqICase("justid")) {
+      options_.just_id = true;
+    }
+
+    return Status::OK();
+  }
+
+  Status Execute(Server *srv, Connection *conn, std::string *output) override {
+    redis::Stream stream_db(srv->storage, conn->GetNamespace());
+    StreamAutoClaimResult result;
+    auto s = stream_db.AutoClaim(key_name_, group_name_, consumer_name_, options_, &result);
+    if (!s.ok()) {
+      return {Status::RedisExecErr, s.ToString()};
+    }
+
+    return sendResults(conn, result, output);
+  }
+
+ private:
+ Status sendResults(Connection *conn, const StreamAutoClaimResult &result, std::string *output) const {
+    output->append(redis::MultiLen(3));
+    output->append(redis::BulkString(result.next_claim_id));
+    output->append(redis::MultiLen(result.entries.size()));
+    for (const auto &item : result.entries) {
+      if (options_.just_id) {
+        output->append(redis::MultiLen(1));
+        output->append(redis::BulkString(item.key));
+      } else {
+        output->append(redis::MultiLen(2));
+        output->append(item.key);
+        output->append(redis::MultiLen(item.values.size()));
+        for (const auto &value_item: item.values) {
+          output->append(redis::BulkString(value_item));
+        }
+      }
+    }
+
+    output->append(redis::MultiLen(result.deleted_ids.size()));
+    for (const auto &item : result.deleted_ids) {
+      output->append(redis::BulkString(item));
+    }
+
+    return Status::OK();
+  }
+
+  std::string key_name_;
+  std::string group_name_;
+  std::string consumer_name_;
+  StreamAutoClaimOptions options_;
+  StreamEntryID start_entry_id_;
 };
 
 class CommandXGroup : public Commander {
