@@ -550,6 +550,10 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
   }
 
   StreamConsumerMetadata current_consumer_metadata = decodeStreamConsumerMetadataValue(get_consumer_value);
+  LOG(INFO) << "current consumer: " << consumer_name << " , consumer_key: " << consumer_key << ", consumer_metadata: " 
+  << current_consumer_metadata.pending_number << ", " << current_consumer_metadata.last_attempted_interaction_ms << ", "
+  << current_consumer_metadata.last_successful_interaction_ms;
+
   std::map<std::string, uint64_t> claimed_consumer_entity_count;
 
   std::string prefix_key = internalPelKeyFromGroupAndEntryId(ns_key, metadata, group_name, options.start_id);
@@ -575,6 +579,7 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
   batch->PutLogData(log_data.Encode());
 
   auto iter = util::UniqueIterator(storage_, read_options, stream_cf_handle_);
+  uint64_t total_claimed_count = 0;
   for (iter->SeekToFirst(); iter->Valid() && count > 0 && attempts > 0; iter->Next()) {
     if (identifySubkeyType(iter->key()) == StreamSubkeyType::StreamPelEntry) {
       std::string tmp_group_name;
@@ -617,18 +622,25 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
       --count;
 
       if (penl_entry.consumer_name != consumer_name) {
+        LOG(INFO) << "penl_entry.consumer_name: " << penl_entry.consumer_name << " consumer_name: " << consumer_name;
+        ++total_claimed_count;
+        claimed_consumer_entity_count[penl_entry.consumer_name] += 1;
         penl_entry.consumer_name = consumer_name;
         penl_entry.last_delivery_time_ms = now_ms;
         penl_entry.last_delivery_count += 1;
         batch->Put(stream_cf_handle_, iter->key(), encodeStreamPelEntryValue(penl_entry));
-        claimed_consumer_entity_count[penl_entry.consumer_name] += 1;
       }
     }
   }
 
-  if (!pending_entries.empty()) {
-    current_consumer_metadata.pending_number += pending_entries.size();
+  if (total_claimed_count > 0 && !pending_entries.empty()) {
+    current_consumer_metadata.pending_number += total_claimed_count;
     current_consumer_metadata.last_attempted_interaction_ms = now_ms;
+
+    LOG(INFO) << "current consumer metadata: " << current_consumer_metadata.pending_number << " "
+              << current_consumer_metadata.last_attempted_interaction_ms << " "
+              << current_consumer_metadata.last_successful_interaction_ms;
+    batch->Put(stream_cf_handle_, consumer_key, encodeStreamConsumerMetadataValue(current_consumer_metadata));
 
     for (const auto &[consumer, count] : claimed_consumer_entity_count) {
       std::string tmp_consumer_key = internalKeyFromConsumerName(ns_key, metadata, group_name, consumer);
@@ -638,13 +650,28 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
         return s;
       }
       StreamConsumerMetadata tmp_consumer_metadata = decodeStreamConsumerMetadataValue(tmp_consumer_value);
+      LOG(INFO) << "tmp consumer metadata: " << tmp_consumer_metadata.pending_number << " "
+                << tmp_consumer_metadata.last_attempted_interaction_ms << " "
+                << tmp_consumer_metadata.last_successful_interaction_ms;
+      LOG(INFO) << "consumer: " << consumer << " count: " << count;
       // tmp_consumer_metadata.last_attempted_interaction_ms = now_ms;
       tmp_consumer_metadata.pending_number -= count;
+      LOG(INFO) << "tmp consumer metadata(updated): " << tmp_consumer_metadata.pending_number << " "
+                << tmp_consumer_metadata.last_attempted_interaction_ms << " "
+                << tmp_consumer_metadata.last_successful_interaction_ms;
       batch->Put(stream_cf_handle_, tmp_consumer_key, encodeStreamConsumerMetadataValue(tmp_consumer_metadata));
     }
   }
 
-  if (iter->Valid()) {
+  bool has_next_entry = false;
+  for(; iter->Valid(); iter->Next()) {
+    if (identifySubkeyType(iter->key()) == StreamSubkeyType::StreamPelEntry) {
+      has_next_entry = true;
+      break;
+    }
+  }
+
+  if (has_next_entry) {
     std::string tmp_group_name;
     StreamEntryID entry_id = groupAndEntryIdFromPelInternalKey(iter->key(), tmp_group_name);
     result->next_claim_id = entry_id.ToString();
@@ -657,7 +684,7 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
   std::transform(deleted_entries.begin(), deleted_entries.end(), std::back_inserter(result->deleted_ids),
                  [](const StreamEntryID &id) { return id.ToString(); });
 
-  return s;
+  return storage_->Write(storage_->DefaultWriteOptions(), batch->GetWriteBatch());
 }
 
 rocksdb::Status Stream::CreateGroup(const Slice &stream_name, const StreamXGroupCreateOptions &options,
