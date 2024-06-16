@@ -18,7 +18,10 @@
  *
  */
 
+#include <glog/logging.h>
+
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <stdexcept>
 #include <string>
@@ -34,8 +37,6 @@
 #include "time_util.h"
 #include "types/redis_stream.h"
 #include "types/redis_stream_base.h"
-
-#include <glog/logging.h>
 
 namespace redis {
 
@@ -390,15 +391,26 @@ class CommandAutoClaim : public Commander {
         LOG(INFO) << "excluded start: true";
       }
       LOG(INFO) << "Start string: " << start_str;
-      auto s = ParseRangeStart(start_str, &start_entry_id_);
-      if (!s.IsOK()) {
-        return s;
+      if (!options_.exclude_start && start_str == "-") {
+        options_.start_id = StreamEntryID::Minimum();
+      } else {
+        auto s = ParseRangeStart(start_str, &options_.start_id);
+        if (!s.IsOK()) {
+          return s;
+        }
       }
-      LOG(INFO) << "Start entry: " << start_entry_id_.ToString();
+      LOG(INFO) << "Start entry: " << options_.start_id.ToString();
     }
 
     if (parser.EatEqICase("count")) {
-      options_.count = GET_OR_RET(parser.TakeInt<uint64_t>());
+      uint64_t count = GET_OR_RET(parser.TakeInt<uint64_t>());
+      constexpr uint64_t min_count = 1;
+      uint64_t max_count =
+          std::numeric_limits<int64_t>::max() / (std::max(sizeof(StreamEntryID), options_.attempts_factors));
+      if (count < min_count || count > max_count) {
+        return {Status::RedisParseErr, "COUNT must be > 0"};
+      }
+      options_.count = count;
       LOG(INFO) << "Count: " << options_.count;
     }
 
@@ -418,12 +430,12 @@ class CommandAutoClaim : public Commander {
       return {Status::RedisExecErr, s.ToString()};
     }
     LOG(INFO) << "AutoClaim next-claim-id: " << result.next_claim_id << ", "
-    << "entries: ";
-    for (const auto& entry : result.entries) {
+              << "entries: ";
+    for (const auto &entry : result.entries) {
       LOG(INFO) << "key: " << entry.key << ", values: ";
     }
     LOG(INFO) << "deleted-ids: ";
-    for (const auto& id : result.deleted_ids) {
+    for (const auto &id : result.deleted_ids) {
       LOG(INFO) << id;
     }
 
@@ -431,19 +443,19 @@ class CommandAutoClaim : public Commander {
   }
 
  private:
- Status sendResults(Connection *conn, const StreamAutoClaimResult &result, std::string *output) const {
+  Status sendResults(Connection *conn, const StreamAutoClaimResult &result, std::string *output) const {
     output->append(redis::MultiLen(3));
     output->append(redis::BulkString(result.next_claim_id));
     output->append(redis::MultiLen(result.entries.size()));
     for (const auto &item : result.entries) {
       if (options_.just_id) {
-        output->append(redis::MultiLen(1));
+        // output->append(redis::MultiLen(1));
         output->append(redis::BulkString(item.key));
       } else {
         output->append(redis::MultiLen(2));
         output->append(redis::BulkString(item.key));
         output->append(redis::MultiLen(item.values.size()));
-        for (const auto &value_item: item.values) {
+        for (const auto &value_item : item.values) {
           output->append(redis::BulkString(value_item));
         }
       }
@@ -461,7 +473,7 @@ class CommandAutoClaim : public Commander {
   std::string group_name_;
   std::string consumer_name_;
   StreamAutoClaimOptions options_;
-  StreamEntryID start_entry_id_;
+  // StreamEntryID start_entry_id_;
 };
 
 class CommandXGroup : public Commander {

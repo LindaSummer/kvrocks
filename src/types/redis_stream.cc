@@ -556,6 +556,8 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
 
   std::map<std::string, uint64_t> claimed_consumer_entity_count;
 
+  LOG(INFO) << "start_id, ms: " << options.start_id.ms << " seq: " << options.start_id.seq << ", to_string: " << options.start_id.ToString();
+
   std::string prefix_key = internalPelKeyFromGroupAndEntryId(ns_key, metadata, group_name, options.start_id);
   std::string end_key = internalPelKeyFromGroupAndEntryId(ns_key, metadata, group_name, StreamEntryID::Maximum());
 
@@ -567,9 +569,9 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
   read_options.iterate_lower_bound = &lower_bound;
   read_options.iterate_upper_bound = &upper_bound;
 
-  constexpr uint32_t attempts_factor = 10;
+  // constexpr uint32_t attempts_factor = 10;
   auto count = options.count;
-  uint64_t attempts = attempts_factor * count;
+  uint64_t attempts = options.attempts_factors * count;
   auto now_ms = util::GetTimeStampMS();
   std::vector<StreamEntryID> deleted_entries;
   std::vector<StreamEntry> pending_entries;
@@ -605,6 +607,8 @@ rocksdb::Status Stream::AutoClaim(const Slice &stream_name, const std::string &g
       if (!s.ok()) {
         if (s.IsNotFound()) {
           deleted_entries.push_back(entry_id);
+          batch->Delete(stream_cf_handle_, iter->key());
+          --count;
           continue;
         }
         return s;

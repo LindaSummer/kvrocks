@@ -176,8 +176,9 @@ struct StreamClaimOptions {
 struct StreamAutoClaimOptions {
   uint64_t min_idle_time_ms;
   uint64_t count = 100;
-  bool just_id = false;
+  uint64_t attempts_factors = 10;
   StreamEntryID start_id;
+  bool just_id = false;
   bool exclude_start = false;
 };
 
