@@ -1593,6 +1593,7 @@ func TestStreamOffset(t *testing.T) {
 				Consumer: consumer2,
 				MinIdle:  10 * time.Millisecond,
 				Count:    1,
+				Start:    "-",
 			})
 			require.NoError(t, rsp.Err())
 			msgs, start := rsp.Val()
@@ -1646,6 +1647,7 @@ func TestStreamOffset(t *testing.T) {
 				Consumer: consumer2,
 				MinIdle:  10 * time.Millisecond,
 				Count:    3,
+				Start:    "-",
 			})
 			require.NoError(t, rsp.Err())
 			msgs, start := rsp.Val()
@@ -1686,6 +1688,7 @@ func TestStreamOffset(t *testing.T) {
 				Group:    groupName,
 				Consumer: consumer2,
 				MinIdle:  10 * time.Millisecond,
+				Start:    "-",
 			})
 			require.NoError(t, rsp.Err())
 			msgs, start := rsp.Val()
@@ -1734,7 +1737,7 @@ func TestStreamOffset(t *testing.T) {
 				Values: []string{"c", "3"},
 			})
 			require.NoError(t, rsp.Err())
-			// id3 = rsp.Val()
+			id3 = rsp.Val()
 		}
 		{
 			rsp := rdb.XAdd(ctx, &redis.XAddArgs{
@@ -1749,6 +1752,7 @@ func TestStreamOffset(t *testing.T) {
 			rsp := rdb.XAdd(ctx, &redis.XAddArgs{
 				Stream: streamName,
 				ID:     "*",
+				Values: []string{"e", "5"},
 			})
 			require.NoError(t, rsp.Err())
 			id5 = rsp.Val()
@@ -1787,6 +1791,7 @@ func TestStreamOffset(t *testing.T) {
 				Consumer: consumer2,
 				MinIdle:  10 * time.Millisecond,
 				Count:    2,
+				Start:    "-",
 			})
 			require.NoError(t, rsp.Err())
 			msgs, start := rsp.Val()
@@ -1850,11 +1855,12 @@ func TestStreamOffset(t *testing.T) {
 	t.Run("XAUTOCLAIM COUNT must be > 0", func(t *testing.T) {
 		// assert_error "ERR COUNT must be > 0" {r XAUTOCLAIM key group consumer 1 1 COUNT 0}
 		err := rdb.XAutoClaim(ctx, &redis.XAutoClaimArgs{
-			Stream:  "key",
-			Group:   "group",
-			MinIdle: time.Millisecond,
-			Start:   "1",
-			Count:   0,
+			Stream:   "key",
+			Group:    "group",
+			Consumer: "consumer",
+			MinIdle:  time.Millisecond,
+			Start:    "1",
+			Count:    0,
 		}).Err()
 		require.Error(t, err)
 		require.Equal(t, "ERR COUNT must be > 0", err.Error())
