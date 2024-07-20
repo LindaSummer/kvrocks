@@ -37,6 +37,7 @@
 #include <vector>
 
 #include "event_util.h"
+#include "oneapi/tbb/concurrent_hash_map.h"
 #include "redis_connection.h"
 #include "storage/storage.h"
 
@@ -44,6 +45,8 @@ class Server;
 
 class Worker : EventCallbackBase<Worker>, EvconnlistenerBase<Worker> {
  public:
+  using ConnMap = tbb::concurrent_hash_map<int, redis::Connection *>;
+
   Worker(Server *srv, Config *config);
   ~Worker();
   Worker(const Worker &) = delete;
@@ -75,7 +78,7 @@ class Worker : EventCallbackBase<Worker>, EvconnlistenerBase<Worker> {
   void TimerCB(int, int16_t events);
 
   lua_State *Lua() { return lua_; }
-  std::map<int, redis::Connection *> GetConnections() const { return conns_; }
+  std::map<int, redis::Connection*> GetConnections() const;
   Server *srv;
 
  private:
@@ -88,9 +91,11 @@ class Worker : EventCallbackBase<Worker>, EvconnlistenerBase<Worker> {
   UniqueEvent timer_;
   std::thread::id tid_;
   std::vector<evconnlistener *> listen_events_;
-  std::mutex conns_mu_;
-  std::map<int, redis::Connection *> conns_;
-  std::map<int, redis::Connection *> monitor_conns_;
+  // std::mutex conns_mu_;
+  // std::map<int, redis::Connection *> conns_;
+  ConnMap conns_;
+  // std::map<int, redis::Connection *> monitor_conns_;
+  ConnMap monitor_conns_;
   int last_iter_conn_fd_ = 0;  // fd of last processed connection in previous cron
 
   struct bufferevent_rate_limit_group *rate_limit_group_ = nullptr;

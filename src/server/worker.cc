@@ -311,11 +311,13 @@ void Worker::Stop(uint32_t wait_seconds) {
 }
 
 Status Worker::AddConnection(redis::Connection *c) {
-  std::unique_lock<std::mutex> lock(conns_mu_);
-  auto iter = conns_.find(c->GetFD());
-  if (iter != conns_.end()) {
+  // std::unique_lock<std::mutex> lock(conns_mu_);
+  LOG(INFO) << "Worker::AddConnection: " << c->GetFD();
+  if (ConnMap::const_accessor accessor; conns_.find(accessor, c->GetFD())) {
+    LOG(INFO) << "Worker::AddConnection: connection was exists " << c->GetFD();
     return {Status::NotOK, "connection was exists"};
   }
+  LOG(INFO) << "Worker::AddConnection: connection was not exists " << c->GetFD();
 
   int max_clients = srv->GetConfig()->maxclients;
   if (srv->IncrClientNum() >= max_clients) {
@@ -323,9 +325,13 @@ Status Worker::AddConnection(redis::Connection *c) {
     return {Status::NotOK, "max number of clients reached"};
   }
 
-  conns_.emplace(c->GetFD(), c);
+  LOG(INFO) << "Worker::AddConnection: insert connection, fd: " << c->GetFD();
+  ConnMap::accessor accessor;
+  // conns_.emplace(c->GetFD(), c);
+  conns_.insert(accessor, c->GetFD());
   uint64_t id = srv->GetClientID();
   c->SetID(id);
+  LOG(INFO) << "Worker::AddConnection: insert connection, fd: " << c->GetFD() << " finished";
 
   return Status::OK();
 }
@@ -333,21 +339,37 @@ Status Worker::AddConnection(redis::Connection *c) {
 redis::Connection *Worker::removeConnection(int fd) {
   redis::Connection *conn = nullptr;
 
-  std::unique_lock<std::mutex> lock(conns_mu_);
-  auto iter = conns_.find(fd);
-  if (iter != conns_.end()) {
-    conn = iter->second;
-    conns_.erase(iter);
+  // std::unique_lock<std::mutex> lock(conns_mu_);
+  // auto iter = conns_.find(fd);
+  // if (iter != conns_.end()) {
+  //   conn = iter->second;
+  //   conns_.erase(iter);
+  //   srv->DecrClientNum();
+  // }
+  LOG(INFO) << "Worker::removeConnection: " << fd;
+  if (ConnMap::accessor accessor; conns_.find(accessor, fd)) {
+    conn = accessor->second;
+    conns_.erase(accessor);
     srv->DecrClientNum();
   }
+  LOG(INFO) << "Worker::removeConnection: " << fd << " finished";
 
-  iter = monitor_conns_.find(fd);
-  if (iter != monitor_conns_.end()) {
-    conn = iter->second;
-    monitor_conns_.erase(iter);
+  // iter = monitor_conns_.find(fd);
+  // if (iter != monitor_conns_.end()) {
+  //   conn = iter->second;
+  //   monitor_conns_.erase(iter);
+  //   srv->DecrClientNum();
+  //   srv->DecrMonitorClientNum();
+  // }
+
+  LOG(INFO) << "Worker::removeConnection: remove monitor connection: " << fd;
+  if (ConnMap::accessor accessor; monitor_conns_.find(accessor, fd)) {
+    conn = accessor->second;
+    monitor_conns_.erase(accessor);
     srv->DecrClientNum();
     srv->DecrMonitorClientNum();
   }
+  LOG(INFO) << "Worker::removeConnection: remove monitor connection: " << fd << " finished";
 
   return conn;
 }
@@ -409,146 +431,281 @@ void Worker::FreeConnection(redis::Connection *conn) {
 }
 
 void Worker::FreeConnectionByID(int fd, uint64_t id) {
-  std::unique_lock<std::mutex> lock(conns_mu_);
-  auto iter = conns_.find(fd);
-  if (iter != conns_.end() && iter->second->GetID() == id) {
+  // std::unique_lock<std::mutex> lock(conns_mu_);
+  // auto iter = conns_.find(fd);
+  // if (iter != conns_.end() && iter->second->GetID() == id) {
+  //   if (rate_limit_group_ != nullptr) {
+  //     bufferevent_remove_from_rate_limit_group(iter->second->GetBufferEvent());
+  //   }
+  //   delete iter->second;
+  //   conns_.erase(iter);
+  //   srv->DecrClientNum();
+  // }
+
+  LOG(INFO) << "Worker::FreeConnectionByID: " << fd;
+  if (ConnMap::accessor accessor; conns_.find(accessor, fd)) {
     if (rate_limit_group_ != nullptr) {
-      bufferevent_remove_from_rate_limit_group(iter->second->GetBufferEvent());
+      bufferevent_remove_from_rate_limit_group(accessor->second->GetBufferEvent());
     }
-    delete iter->second;
-    conns_.erase(iter);
+    conns_.erase(accessor);
+    delete accessor->second;
     srv->DecrClientNum();
   }
+  LOG(INFO) << "Worker::FreeConnectionByID: " << fd << " finished";
 
-  iter = monitor_conns_.find(fd);
-  if (iter != monitor_conns_.end() && iter->second->GetID() == id) {
-    delete iter->second;
-    monitor_conns_.erase(iter);
+  // iter = monitor_conns_.find(fd);
+  // if (iter != monitor_conns_.end() && iter->second->GetID() == id) {
+  //   delete iter->second;
+  //   monitor_conns_.erase(iter);
+  //   srv->DecrClientNum();
+  //   srv->DecrMonitorClientNum();
+  // }
+
+  LOG(INFO) << "Worker::FreeConnectionByID: monitor_conn_ " << fd;
+  if (ConnMap::accessor accessor; monitor_conns_.find(accessor, fd)) {
+    delete accessor->second;
+    monitor_conns_.erase(accessor);
     srv->DecrClientNum();
     srv->DecrMonitorClientNum();
   }
+  LOG(INFO) << "Worker::FreeConnectionByID: monitor_conn_ " << fd << " finished";
 }
 
 Status Worker::EnableWriteEvent(int fd) {
-  std::unique_lock<std::mutex> lock(conns_mu_);
-  auto iter = conns_.find(fd);
-  if (iter != conns_.end()) {
-    auto bev = iter->second->GetBufferEvent();
+  // std::unique_lock<std::mutex> lock(conns_mu_);
+  // auto iter = conns_.find(fd);
+  // if (iter != conns_.end()) {
+  //   auto bev = iter->second->GetBufferEvent();
+  //   bufferevent_enable(bev, EV_WRITE);
+  //   return Status::OK();
+  // }
+
+LOG(INFO) << "Worker::EnableWriteEvent: " << fd;
+  if (ConnMap::const_accessor accessor; conns_.find(accessor, fd)) {
+    auto bev = accessor->second->GetBufferEvent();
     bufferevent_enable(bev, EV_WRITE);
+    // accessor.release();
+    LOG(INFO) << "Worker::EnableWriteEvent: " << fd << " finished";
     return Status::OK();
   }
+  LOG(INFO) << "Worker::EnableWriteEvent: " << fd << " not found";
 
   return {Status::NotOK, "connection doesn't exist"};
 }
 
 Status Worker::Reply(int fd, const std::string &reply) {
-  std::unique_lock<std::mutex> lock(conns_mu_);
-  auto iter = conns_.find(fd);
-  if (iter != conns_.end()) {
-    iter->second->SetLastInteraction();
-    redis::Reply(iter->second->Output(), reply);
+  // std::unique_lock<std::mutex> lock(conns_mu_);
+  // auto iter = conns_.find(fd);
+  // if (iter != conns_.end()) {
+  //   iter->second->SetLastInteraction();
+  //   redis::Reply(iter->second->Output(), reply);
+  //   return Status::OK();
+  // }
+  LOG(INFO) << "Worker::Reply: " << fd;
+  if (ConnMap::accessor accessor; conns_.find(accessor, fd)) {
+    accessor->second->SetLastInteraction();
+    redis::Reply(accessor->second->Output(), reply);
+    LOG(INFO) << "Worker::Reply: " << fd << " finished";
     return Status::OK();
   }
+  LOG(INFO) << "Worker::Reply: " << fd << " not found";
 
   return {Status::NotOK, "connection doesn't exist"};
 }
 
 void Worker::BecomeMonitorConn(redis::Connection *conn) {
-  {
-    std::lock_guard<std::mutex> guard(conns_mu_);
-    conns_.erase(conn->GetFD());
-    monitor_conns_[conn->GetFD()] = conn;
+  // {
+  // std::lock_guard<std::mutex> guard(conns_mu_);
+  // conns_.erase(conn->GetFD());
+  // monitor_conns_[conn->GetFD()] = conn;
+  // }
+  LOG(INFO) << "Worker::BecomeMonitorConn: " << conn->GetFD();
+  if (ConnMap::accessor accesor; conns_.find(accesor, conn->GetFD())) {
+    conns_.erase(accesor);
+    accesor.release();
+    LOG(INFO) << "Worker::BecomeMonitorConn: erase connection: " << conn->GetFD();
+    LOG(INFO) << "Worker::BecomeMonitorConn: insert monitor connection: " << conn->GetFD();
+    if (ConnMap::accessor accesor; monitor_conns_.find(accesor, conn->GetFD())) {
+      LOG(INFO) << "Worker::BecomeMonitorConn: monitor connection was exists " << conn->GetFD();
+      accesor->second = conn;
+    } else {
+      LOG(INFO) << "Worker::BecomeMonitorConn: monitor connection was not exists " << conn->GetFD();
+      monitor_conns_.insert(accesor, std::make_pair(conn->GetFD(), conn));
+    }
   }
+  LOG(INFO) << "Worker::BecomeMonitorConn: " << conn->GetFD() << " finished";
   srv->IncrMonitorClientNum();
   conn->EnableFlag(redis::Connection::kMonitor);
 }
 
 void Worker::QuitMonitorConn(redis::Connection *conn) {
-  {
-    std::lock_guard<std::mutex> guard(conns_mu_);
-    monitor_conns_.erase(conn->GetFD());
-    conns_[conn->GetFD()] = conn;
+  // {
+  //   std::lock_guard<std::mutex> guard(conns_mu_);
+  //   monitor_conns_.erase(conn->GetFD());
+  //   conns_[conn->GetFD()] = conn;
+  // }
+  LOG(INFO) << "Worker::QuitMonitorConn: " << conn->GetFD();
+  if (ConnMap::accessor accessor; monitor_conns_.find(accessor, conn->GetFD())) {
+    monitor_conns_.erase(accessor);
+    accessor.release();
+    LOG(INFO) << "Worker::QuitMonitorConn: erase monitor connection: " << conn->GetFD();
+    LOG(INFO) << "Worker::QuitMonitorConn: insert connection: " << conn->GetFD();
+    if (ConnMap::accessor accessor; conns_.find(accessor, conn->GetFD())) {
+      LOG(INFO) << "Worker::QuitMonitorConn: connection was exists " << conn->GetFD();
+      accessor->second = conn;
+    } else {
+      LOG(INFO) << "Worker::QuitMonitorConn: connection was not exists " << conn->GetFD();
+      conns_.insert(accessor, std::make_pair(conn->GetFD(), conn));
+    }
   }
+  LOG(INFO) << "Worker::QuitMonitorConn: " << conn->GetFD() << " finished";
   srv->DecrMonitorClientNum();
   conn->DisableFlag(redis::Connection::kMonitor);
 }
 
 void Worker::FeedMonitorConns(redis::Connection *conn, const std::string &response) {
-  std::unique_lock<std::mutex> lock(conns_mu_);
+  // std::unique_lock<std::mutex> lock(conns_mu_);
 
-  for (const auto &iter : monitor_conns_) {
-    if (conn == iter.second) continue;  // skip the monitor command
+  // for (const auto &iter : monitor_conns_) {
+  //   if (conn == iter.second) continue;  // skip the monitor command
 
-    if (conn->GetNamespace() == iter.second->GetNamespace() || iter.second->GetNamespace() == kDefaultNamespace) {
-      iter.second->Reply(response);
+  //   if (conn->GetNamespace() == iter.second->GetNamespace() || iter.second->GetNamespace() == kDefaultNamespace) {
+  //     iter.second->Reply(response);
+  //   }
+  // }
+  LOG(INFO) << "Worker::FeedMonitorConns: " << conn->GetFD();
+  for (const auto &[key, _] : monitor_conns_) {
+    if (ConnMap::accessor accessor; conns_.find(accessor, key)) {
+      const auto &value = accessor->second;
+      if (conn == value) continue;
+      if (conn->GetNamespace() == value->GetNamespace() || value->GetNamespace() == kDefaultNamespace) {
+        value->Reply(response);
+      }
     }
   }
+  LOG(INFO) << "Worker::FeedMonitorConns: " << conn->GetFD() << " finished";
 }
 
 std::string Worker::GetClientsStr() {
-  std::unique_lock<std::mutex> lock(conns_mu_);
+  // std::unique_lock<std::mutex> lock(conns_mu_);
+
+  // std::string output;
+  // for (const auto &iter : conns_) {
+  //   redis::Connection *conn = iter.second;
+  //   output.append(conn->ToString());
+  // }
 
   std::string output;
-  for (const auto &iter : conns_) {
-    redis::Connection *conn = iter.second;
-    output.append(conn->ToString());
+  LOG(INFO) << "Worker::GetClientsStr: start";
+  for (const auto &[key, _] : conns_) {
+    if (ConnMap::const_accessor accessor; monitor_conns_.find(accessor, key)) {
+      output.append(accessor->second->ToString());
+    }
   }
+  LOG(INFO) << "Worker::GetClientsStr: finished, output: " << output;
 
   return output;
 }
 
 void Worker::KillClient(redis::Connection *self, uint64_t id, const std::string &addr, uint64_t type, bool skipme,
                         int64_t *killed) {
-  std::lock_guard<std::mutex> guard(conns_mu_);
+  // std::lock_guard<std::mutex> guard(conns_mu_);
 
-  for (const auto &iter : conns_) {
-    redis::Connection *conn = iter.second;
-    if (skipme && self == conn) continue;
+  // for (const auto &iter : conns_) {
+  //   redis::Connection *conn = iter.second;
+  //   if (skipme && self == conn) continue;
 
-    // no need to kill the client again if the kCloseAfterReply flag is set
-    if (conn->IsFlagEnabled(redis::Connection::kCloseAfterReply)) {
-      continue;
-    }
+  //   // no need to kill the client again if the kCloseAfterReply flag is set
+  //   if (conn->IsFlagEnabled(redis::Connection::kCloseAfterReply)) {
+  //     continue;
+  //   }
 
-    if ((type & conn->GetClientType()) ||
-        (!addr.empty() && (conn->GetAddr() == addr || conn->GetAnnounceAddr() == addr)) ||
-        (id != 0 && conn->GetID() == id)) {
-      conn->EnableFlag(redis::Connection::kCloseAfterReply);
-      // enable write event to notify worker wake up ASAP, and remove the connection
-      if (!conn->IsFlagEnabled(redis::Connection::kSlave)) {  // don't enable any event in slave connection
-        auto bev = conn->GetBufferEvent();
-        bufferevent_enable(bev, EV_WRITE);
+  //   if ((type & conn->GetClientType()) ||
+  //       (!addr.empty() && (conn->GetAddr() == addr || conn->GetAnnounceAddr() == addr)) ||
+  //       (id != 0 && conn->GetID() == id)) {
+  //     conn->EnableFlag(redis::Connection::kCloseAfterReply);
+  //     // enable write event to notify worker wake up ASAP, and remove the connection
+  //     if (!conn->IsFlagEnabled(redis::Connection::kSlave)) {  // don't enable any event in slave connection
+  //       auto bev = conn->GetBufferEvent();
+  //       bufferevent_enable(bev, EV_WRITE);
+  //     }
+  //     (*killed)++;
+  //   }
+  // }
+
+LOG(INFO) << "Worker::KillClient: " << self->GetFD();
+  for (const auto &[key, _] : conns_) {
+    if (ConnMap::accessor accessor; conns_.find(accessor, key)) {
+      auto conn = accessor->second;
+      if (skipme && self == conn) continue;
+      if (conn->IsFlagEnabled(redis::Connection::kCloseAfterReply)) continue;
+      if ((type & conn->GetClientType()) ||
+          (!addr.empty() && (conn->GetAddr() == addr || conn->GetAnnounceAddr() == addr)) ||
+          (id != 0 && conn->GetID() == id)) {
+        conn->EnableFlag(redis::Connection::kCloseAfterReply);
+        if (!conn->IsFlagEnabled(redis::Connection::kSlave)) {
+          auto bev = conn->GetBufferEvent();
+          bufferevent_enable(bev, EV_WRITE);
+        }
+        (*killed)++;
       }
-      (*killed)++;
     }
   }
+  LOG(INFO) << "Worker::KillClient: " << self->GetFD() << " finished";
 }
 
 void Worker::KickoutIdleClients(int timeout) {
   std::vector<std::pair<int, uint64_t>> to_be_killed_conns;
 
-  {
-    std::lock_guard<std::mutex> guard(conns_mu_);
-    if (conns_.empty()) {
-      return;
-    }
+  // {
+  // std::lock_guard<std::mutex> guard(conns_mu_);
+  // if (conns_.empty()) {
+  //   return;
+  // }
 
-    int iterations = std::min(static_cast<int>(conns_.size()), 50);
-    auto iter = conns_.upper_bound(last_iter_conn_fd_);
-    while (iterations--) {
-      if (iter == conns_.end()) iter = conns_.begin();
-      if (static_cast<int>(iter->second->GetIdleTime()) >= timeout) {
-        to_be_killed_conns.emplace_back(iter->first, iter->second->GetID());
-      }
-      iter++;
-    }
-    iter--;
-    last_iter_conn_fd_ = iter->first;
+  // int iterations = std::min(static_cast<int>(conns_.size()), 50);
+  // auto iter = conns_.upper_bound(last_iter_conn_fd_); // use tbb hash map should filter one by one
+  // while (iterations--) {
+  //   if (iter == conns_.end()) iter = conns_.begin();
+  //   if (static_cast<int>(iter->second->GetIdleTime()) >= timeout) {
+  //     to_be_killed_conns.emplace_back(iter->first, iter->second->GetID());
+  //   }
+  //   iter++;
+  // }
+  // iter--;
+  // last_iter_conn_fd_ = iter->first;
+  // }
+
+  // convert tbb::concurrent_hash_map to a map with read accesses
+  LOG(INFO) << "Worker::KickoutIdleClients starting";
+  std::set<int> fds;
+  for (const auto &[key, _] : conns_) {
+    fds.emplace(key);
   }
+
+  if (fds.empty()) {
+    return;
+  }
+
+  int iterations = std::min(static_cast<int>(conns_.size()), 50);
+  auto iter = fds.upper_bound(last_iter_conn_fd_);  // use tbb hash map should filter one by one
+  while (iterations--) {
+    if (iter == fds.end()) {
+      iter = fds.begin();
+    }
+    if (ConnMap::const_accessor accessor;
+        conns_.find(accessor, *iter) && static_cast<int>(accessor->second->GetIdleTime()) >= timeout) {
+      to_be_killed_conns.emplace_back(accessor->first, accessor->second->GetID());
+    }
+    iter++;
+  }
+  iter--;
+  last_iter_conn_fd_ = *iter;
 
   for (const auto &conn : to_be_killed_conns) {
     FreeConnectionByID(conn.first, conn.second);
   }
+  LOG(INFO) << "Worker::KickoutIdleClients finished";
 }
 
 void WorkerThread::Start() {
@@ -562,6 +719,14 @@ void WorkerThread::Start() {
   }
 
   LOG(INFO) << "[worker] Thread #" << t_.get_id() << " started";
+}
+
+std::map<int, redis::Connection *> Worker::GetConnections() const {
+  std::map<int, redis::Connection *> result;
+  for (auto [k, v] : conns_) {
+    result.emplace(k, v);
+  }
+  return result;
 }
 
 void WorkerThread::Stop(uint32_t wait_seconds) { worker_->Stop(wait_seconds); }
