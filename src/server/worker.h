@@ -86,6 +86,8 @@ class Worker : EventCallbackBase<Worker>, EvconnlistenerBase<Worker> {
   void newTCPConnection(evconnlistener *listener, evutil_socket_t fd, sockaddr *address, int socklen);
   void newUnixSocketConnection(evconnlistener *listener, evutil_socket_t fd, sockaddr *address, int socklen);
   redis::Connection *removeConnection(int fd);
+  std::vector<int> getConnFds() const;
+  std::vector<int> getMonitorConnFds() const;
 
   event_base *base_;
   UniqueEvent timer_;

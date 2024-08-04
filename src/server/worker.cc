@@ -26,6 +26,7 @@
 #include <mutex>
 #include <stdexcept>
 #include <string>
+#include <vector>
 
 #include "event2/bufferevent.h"
 #include "io_util.h"
@@ -48,6 +49,8 @@
 #include <list>
 #include <utility>
 
+#include "oneapi/tbb/parallel_for.h"
+#include "oneapi/tbb/parallel_reduce.h"
 #include "redis_connection.h"
 #include "redis_request.h"
 #include "server.h"
@@ -77,22 +80,59 @@ Worker::Worker(Server *srv, Config *config) : srv(srv), base_(event_base_new()) 
 }
 
 Worker::~Worker() {
-  {
-    std::lock_guard<std::mutex> guard(conns_mu_);
-    for (const auto &iter : conns_) {
-      if (ConnMap::accessor accessor; conns_.find(accessor, iter.first)) {
-        accessor->second->Close();
-      }
-    }
+  // {
+  //   std::lock_guard<std::mutex> guard(conns_mu_);
+  //   for (const auto &iter : conns_) {
+  //     if (ConnMap::accessor accessor; conns_.find(accessor, iter.first)) {
+  //       accessor->second->Close();
+  //     }
+  //   }
+  // }
+
+  // std::vector<redis::Connection *> conns;
+  auto conns = tbb::parallel_reduce(
+      conns_.range(), std::vector<redis::Connection *>{},
+      [](const ConnMap::range_type &range, std::vector<redis::Connection *> &&result) {
+        for (auto &it : range) {
+          result.push_back(it.second);
+        }
+        return result;
+      },
+      [](const std::vector<redis::Connection *> &lhs, const std::vector<redis::Connection *> &rhs) {
+        std::vector<redis::Connection *> result = lhs;
+        result.insert(result.end(), rhs.begin(), rhs.end());
+        return result;
+      });
+
+  // {
+  //   std::lock_guard<std::mutex> guard(conns_mu_);
+  //   for (const auto &iter : monitor_conns_) {
+  //     if (ConnMap::accessor accessor; monitor_conns_.find(accessor, iter.first)) {
+  //       accessor->second->Close();
+  //     }
+  //   }
+  // }
+
+  auto monitor_conns = tbb::parallel_reduce(
+      monitor_conns_.range(), std::vector<redis::Connection *>{},
+      [](const ConnMap::range_type &range, std::vector<redis::Connection *> &&result) {
+        for (auto &it : range) {
+          result.push_back(it.second);
+        }
+        return result;
+      },
+      [](const std::vector<redis::Connection *> &lhs, const std::vector<redis::Connection *> &rhs) {
+        std::vector<redis::Connection *> result = lhs;
+        result.insert(result.end(), rhs.begin(), rhs.end());
+        return result;
+      });
+
+  for (auto conn : conns) {
+    conn->Close();
   }
 
-  {
-    std::lock_guard<std::mutex> guard(conns_mu_);
-    for (const auto &iter : monitor_conns_) {
-      if (ConnMap::accessor accessor; monitor_conns_.find(accessor, iter.first)) {
-        accessor->second->Close();
-      }
-    }
+  for (auto conn : monitor_conns) {
+    conn->Close();
   }
 
   timer_.reset();
@@ -338,7 +378,7 @@ Status Worker::AddConnection(redis::Connection *c) {
 redis::Connection *Worker::removeConnection(int fd) {
   redis::Connection *conn = nullptr;
 
-  std::lock_guard<std::mutex> guard(conns_mu_);
+  // std::lock_guard<std::mutex> guard(conns_mu_);
   if (ConnMap::accessor accessor; conns_.find(accessor, fd)) {
     {
       conn = accessor->second;
@@ -414,7 +454,7 @@ void Worker::FreeConnection(redis::Connection *conn) {
 }
 
 void Worker::FreeConnectionByID(int fd, uint64_t id) {
-  std::lock_guard<std::mutex> guard(conns_mu_);
+  // std::lock_guard<std::mutex> guard(conns_mu_);
   if (ConnMap::accessor accessor; conns_.find(accessor, fd)) {
     if (rate_limit_group_ != nullptr) {
       bufferevent_remove_from_rate_limit_group(accessor->second->GetBufferEvent());
@@ -454,7 +494,7 @@ Status Worker::Reply(int fd, const std::string &reply) {
 }
 
 void Worker::BecomeMonitorConn(redis::Connection *conn) {
-  std::lock_guard<std::mutex> guard(conns_mu_);
+  // std::lock_guard<std::mutex> guard(conns_mu_);
   if (ConnMap::accessor accessor; conns_.find(accessor, conn->GetFD())) {
     conns_.erase(accessor);
     accessor.release();
@@ -470,7 +510,7 @@ void Worker::BecomeMonitorConn(redis::Connection *conn) {
 }
 
 void Worker::QuitMonitorConn(redis::Connection *conn) {
-  std::lock_guard<std::mutex> guard(conns_mu_);
+  // std::lock_guard<std::mutex> guard(conns_mu_);
   if (ConnMap::accessor accessor; monitor_conns_.find(accessor, conn->GetFD())) {
     {
       monitor_conns_.erase(accessor);
@@ -487,34 +527,58 @@ void Worker::QuitMonitorConn(redis::Connection *conn) {
 }
 
 void Worker::FeedMonitorConns(redis::Connection *conn, const std::string &response) {
-  std::lock_guard<std::mutex> guard(conns_mu_);
-  for (const auto &[key, _] : monitor_conns_) {
-    if (ConnMap::accessor accessor; monitor_conns_.find(accessor, key)) {
-      const auto &value = accessor->second;
+  // std::lock_guard<std::mutex> guard(conns_mu_);
+  // for (const auto &[key, _] : monitor_conns_) {
+  //   if (ConnMap::accessor accessor; monitor_conns_.find(accessor, key)) {
+  //     const auto &value = accessor->second;
+  //     if (conn == value) continue;
+  //     if (conn->GetNamespace() == value->GetNamespace() || value->GetNamespace() == kDefaultNamespace) {
+  //       value->Reply(response);
+  //     }
+  //   }
+  // }
+  tbb::parallel_for(monitor_conns_.range(), [conn, response](const ConnMap::range_type &range) {
+    for (auto &it : range) {
+      const auto &value = it.second;
       if (conn == value) continue;
       if (conn->GetNamespace() == value->GetNamespace() || value->GetNamespace() == kDefaultNamespace) {
         value->Reply(response);
       }
     }
-  }
+  });
 }
 
 std::string Worker::GetClientsStr() {
   std::string output;
-  std::lock_guard<std::mutex> guard(conns_mu_);
-  for (const auto &[key, _] : conns_) {
-    if (ConnMap::const_accessor accessor; conns_.find(accessor, key)) {
-      output.append(accessor->second->ToString());
-    }
-  }
+  // std::lock_guard<std::mutex> guard(conns_mu_);
+  // for (const auto &[key, _] : conns_) {
+  //   if (ConnMap::const_accessor accessor; conns_.find(accessor, key)) {
+  //     output.append(accessor->second->ToString());
+  //   }
+  // }
+
+  output = tbb::parallel_reduce(
+      conns_.range(), std::string{},
+      [](const ConnMap::range_type &range, std::string &&result) {
+        for (auto &it : range) {
+          result.append(it.second->ToString());
+        }
+        return result;
+      },
+      [](const std::string &lhs, const std::string &rhs) {
+        std::string result = lhs;
+        result.append(rhs);
+        return result;
+      });
 
   return output;
 }
 
 void Worker::KillClient(redis::Connection *self, uint64_t id, const std::string &addr, uint64_t type, bool skipme,
                         int64_t *killed) {
-  std::lock_guard<std::mutex> guard(conns_mu_);
-  for (const auto &[key, _] : conns_) {
+  // std::lock_guard<std::mutex> guard(conns_mu_);
+  auto fds = getConnFds();
+  for (const auto key : fds) {
     if (ConnMap::accessor accessor; conns_.find(accessor, key)) {
       auto conn = accessor->second;
       if (skipme && self == conn) continue;
@@ -542,8 +606,8 @@ void Worker::KickoutIdleClients(int timeout) {
   std::vector<std::pair<int, uint64_t>> to_be_killed_conns;
 
   std::set<int> fds;
-  std::lock_guard<std::mutex> guard(conns_mu_);
-  for (const auto &[key, _] : conns_) {
+  // std::lock_guard<std::mutex> guard(conns_mu_);
+  for (const auto key : getConnFds()) {
     fds.emplace(key);
   }
 
@@ -571,6 +635,40 @@ void Worker::KickoutIdleClients(int timeout) {
   }
 }
 
+std::vector<int> Worker::getConnFds() const {
+  return tbb::parallel_reduce(
+      conns_.range(), std::vector<int>{},
+      [](const ConnMap::const_range_type &range, std::vector<int> result) {
+        for (const auto &fd : range) {
+          result.emplace_back(fd.first);
+        }
+        return result;
+      },
+      [](const std::vector<int> &lhs, const std::vector<int> &rhs) {
+        std::vector<int> result = lhs;
+        result.insert(result.end(), rhs.begin(), rhs.end());
+        return result;
+      });
+  // return {};
+}
+
+std::vector<int> Worker::getMonitorConnFds() const {
+  return tbb::parallel_reduce(
+      monitor_conns_.range(), std::vector<int>{},
+      [](const ConnMap::const_range_type &range, std::vector<int> &&result) {
+        for (const auto &fd : range) {
+          result.emplace_back(fd.first);
+        }
+        return result;
+      },
+      [](const std::vector<int> &lhs, const std::vector<int> &rhs) {
+        std::vector<int> result = lhs;
+        result.insert(result.end(), rhs.begin(), rhs.end());
+        return result;
+      });
+  // return {};
+}
+
 void WorkerThread::Start() {
   auto s = util::CreateThread("worker", [this] { this->worker_->Run(std::this_thread::get_id()); });
 
@@ -585,13 +683,27 @@ void WorkerThread::Start() {
 }
 
 std::map<int, redis::Connection *> Worker::GetConnections() const {
-  std::unique_lock<std::mutex> guard(conns_mu_);
+  // std::unique_lock<std::mutex> guard(conns_mu_);
   std::map<int, redis::Connection *> result;
-  for (auto [fd, _] : conns_) {
-    if (ConnMap::accessor accessor; conns_.find(accessor, fd)) {
-      result.emplace(accessor->first, accessor->second);
-    }
-  }
+  // for (auto fd : getConnFds()) {
+  //   if (ConnMap::accessor accessor; conns_.find(accessor, fd)) {
+  //     result.emplace(accessor->first, accessor->second);
+  //   }
+  // }
+  result = tbb::parallel_reduce(
+      conns_.range(), result,
+      [](const ConnMap::const_range_type &range, std::map<int, redis::Connection *> &&tmp_result) {
+        // std::map<int, redis::Connection *> tmp_result;
+        for (auto &it : range) {
+          tmp_result.emplace(it.first, it.second);
+        }
+        return tmp_result;
+      },
+      [](const std::map<int, redis::Connection *> &lhs, const std::map<int, redis::Connection *> &rhs) {
+        std::map<int, redis::Connection *> result = lhs;
+        result.insert(rhs.cbegin(), rhs.cend());
+        return result;
+      });
   return result;
 }
 
