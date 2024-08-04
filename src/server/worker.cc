@@ -23,6 +23,7 @@
 #include <event2/util.h>
 #include <glog/logging.h>
 
+#include <mutex>
 #include <stdexcept>
 #include <string>
 
