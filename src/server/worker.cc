@@ -78,22 +78,32 @@ Worker::Worker(Server *srv, Config *config) : srv(srv), base_(event_base_new()) 
 }
 
 Worker::~Worker() {
-  auto collect_conns_fn = [](ConnMap &conns) {
-    return parallel_reduce(
-        conns.range(), std::vector<redis::Connection *>{},
-        [](const ConnMap::range_type &range, std::vector<redis::Connection *> &&result) {
-          std::transform(range.begin(), range.end(), std::back_inserter(result),
-                         [](const auto &it) { return it.second; });
-          return result;
-        },
-        [](const std::vector<redis::Connection *> &lhs, const std::vector<redis::Connection *> &rhs) {
-          std::vector<redis::Connection *> result = lhs;
-          result.insert(result.end(), rhs.begin(), rhs.end());
-          return result;
-        });
-  };
-  auto conns = collect_conns_fn(conns_);
-  auto monitor_conns = collect_conns_fn(monitor_conns_);
+  // auto collect_conns_fn = [](ConnMap &conns) {
+  //   return parallel_reduce(
+  //       conns.range(), std::vector<redis::Connection *>{},
+  //       [](const ConnMap::range_type &range, std::vector<redis::Connection *> &&result) {
+  //         std::transform(range.begin(), range.end(), std::back_inserter(result),
+  //                        [](const auto &it) { return it.second; });
+  //         return result;
+  //       },
+  //       [](const std::vector<redis::Connection *> &lhs, const std::vector<redis::Connection *> &rhs) {
+  //         std::vector<redis::Connection *> result = lhs;
+  //         result.insert(result.end(), rhs.begin(), rhs.end());
+  //         return result;
+  //       });
+  // };
+  // auto conns = collect_conns_fn(conns_);
+  // auto monitor_conns = collect_conns_fn(monitor_conns_);
+  std::vector<redis::Connection *> conns;
+  std::vector<redis::Connection *> monitor_conns;
+
+  for (const auto &[fd, conn] : conns_) {
+    conns.emplace_back(conn);
+  }
+
+  for (const auto &[fd, conn] : monitor_conns_) {
+    monitor_conns.emplace_back(conn);
+  }
 
   for (auto conn : conns) {
     conn->Close();
