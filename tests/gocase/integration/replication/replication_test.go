@@ -552,3 +552,34 @@ func TestFullSyncReplication(t *testing.T) {
 		require.Equal(t, "bar", slaveClient.Get(ctx, "foo").Val())
 	})
 }
+
+func TestSlaveLostMaster(t *testing.T) {
+	ctx := context.Background()
+
+	masterSrv := util.StartServer(t, map[string]string{"cluster-enabled": "yes"})
+	defer func() { masterSrv.Close() }()
+	masterClient := masterSrv.NewClient()
+	defer func() { require.NoError(t, masterClient.Close()) }()
+	masterNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx00"
+	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODEID", masterNodeID).Err())
+
+	replicaSrv := util.StartServer(t, map[string]string{
+		"cluster-enabled": "yes",
+	})
+	defer func() { replicaSrv.Close() }()
+	replicaClient := replicaSrv.NewClient()
+	// allow to run the read-only command in the replica
+	require.NoError(t, replicaClient.ReadOnly(ctx).Err())
+	defer func() { require.NoError(t, replicaClient.Close()) }()
+	replicaNodeID := "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx01"
+	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODEID", replicaNodeID).Err())
+
+	proxyCtx, cancelProxy := context.WithCancel(ctx)
+	newMasterPort := util.SimpleTCPProxy(proxyCtx, t, fmt.Sprintf("127.0.0.1:%d", masterSrv.Port()))
+
+	clusterNodes := fmt.Sprintf("%s 127.0.0.1 %d master - 0-16383", masterNodeID, masterSrv.Port())
+	clusterNodes = fmt.Sprintf("%s\n%s 127.0.0.1 %d slave %s", clusterNodes, replicaNodeID, replicaSrv.Port(), masterNodeID)
+
+	require.NoError(t, masterClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+	require.NoError(t, replicaClient.Do(ctx, "clusterx", "SETNODES", clusterNodes, "1").Err())
+}

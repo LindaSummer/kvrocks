@@ -22,6 +22,8 @@ package util
 import (
 	"context"
 	"fmt"
+	"io"
+	"net"
 	"regexp"
 	"strings"
 	"testing"
@@ -70,4 +72,45 @@ func Populate(t testing.TB, rdb *redis.Client, prefix string, n, size int) {
 
 	_, err := p.Exec(ctx)
 	require.NoError(t, err)
+}
+
+func SimpleTCPProxy(ctx context.Context, t testing.TB, to string) uint64 {
+	addr, err := findFreePort()
+	if err != nil {
+		t.Fatalf("can't find a free port, %v", err)
+	}
+	from := addr.String()
+
+	listener, err := net.Listen("tcp", from)
+	if err != nil {
+		t.Fatalf("listen to %s failed, err: %v", from, err)
+	}
+
+	go func() {
+		defer listener.Close()
+	LISTEN_LOOP:
+		for {
+			select {
+			case <-ctx.Done():
+				break LISTEN_LOOP
+
+			default:
+				conn, err := listener.Accept()
+				if err != nil {
+					t.Fatalf("accept conn failed, err: %v", err)
+				}
+				go func(conn net.Conn) {
+					defer conn.Close()
+					forwarder, err := net.Dial("tcp", to)
+					if err != nil {
+						t.Fatalf("dial to %s failed, err: %v", to, err)
+					}
+					defer forwarder.Close()
+					io.Copy(forwarder, conn)
+				}(conn)
+			}
+		}
+		// force close listener
+	}()
+	return uint64(addr.Port)
 }
