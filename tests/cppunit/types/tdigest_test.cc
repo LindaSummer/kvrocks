@@ -1171,3 +1171,30 @@ TEST_F(RedisTDigestTest, CDFSkewedDistribution) {
         << fmt::format("Mismatch at index {}, val={}", i, cdf_vals[i]);
   }
 }
+
+TEST_F(RedisTDigestTest, CDFRepeatedCentroids) {
+  std::string test_digest_name = "test_cdf_repeated_centroids" + std::to_string(util::GetTimeStampMS());
+
+  bool exists = false;
+  auto status = tdigest_->Create(*ctx_, test_digest_name, {200}, &exists);
+  ASSERT_FALSE(exists);
+  ASSERT_TRUE(status.ok());
+
+  std::vector<double> samples = {-40, -36, -27, -13, -12, 7, 7, 25, 47, 50};
+
+  status = tdigest_->Add(*ctx_, test_digest_name, samples);
+  ASSERT_TRUE(status.ok());
+
+  std::vector<double> cdf_vals = {0, 6.9, 7, 7.1, 10};
+  redis::TDigestCDFResult result;
+  status = tdigest_->CDF(*ctx_, test_digest_name, cdf_vals, &result);
+  ASSERT_TRUE(status.ok());
+
+  std::vector<double> expected = {0.5, 0.5, 0.6, 0.7, 0.7};
+  ASSERT_EQ(result.cdf_values.size(), cdf_vals.size());
+
+  for (size_t i = 0; i < cdf_vals.size(); i++) {
+    EXPECT_NEAR((result.cdf_values)[i], expected[i], 0.03)
+        << fmt::format("Mismatch at index {}, val={}", i, cdf_vals[i]);
+  }
+}
