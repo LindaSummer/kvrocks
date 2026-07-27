@@ -1198,3 +1198,84 @@ TEST_F(RedisTDigestTest, CDFRepeatedCentroids) {
         << fmt::format("Mismatch at index {}, val={}", i, cdf_vals[i]);
   }
 }
+
+TEST_F(RedisTDigestTest, CDFSingleWeightedCentroid) {
+  std::string test_digest_name = "test_cdf_single_weighted_centroid" + std::to_string(util::GetTimeStampMS());
+  bool exists = false;
+  auto status = tdigest_->Create(*ctx_, test_digest_name, {100}, &exists);
+  ASSERT_FALSE(exists);
+  ASSERT_TRUE(status.ok());
+
+  status = tdigest_->Add(*ctx_, test_digest_name, {5, 5, 5, 5, 5, 5, 5, 5, 5, 5});
+  ASSERT_TRUE(status.ok());
+
+  std::vector<double> cdf_vals = {4, 5, 6};
+  redis::TDigestCDFResult result;
+  status = tdigest_->CDF(*ctx_, test_digest_name, cdf_vals, &result);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+  ASSERT_EQ(result.cdf_values.size(), cdf_vals.size());
+  EXPECT_NEAR(result.cdf_values[0], 0.0, 0.001);
+  EXPECT_NEAR(result.cdf_values[1], 0.5, 0.001);
+  EXPECT_NEAR(result.cdf_values[2], 1.0, 0.001);
+}
+
+TEST_F(RedisTDigestTest, CDFLeftTailInterpolation) {
+  std::string test_digest_name = "test_cdf_left_tail" + std::to_string(util::GetTimeStampMS());
+  bool exists = false;
+  auto status = tdigest_->Create(*ctx_, test_digest_name, {1}, &exists);
+  ASSERT_FALSE(exists);
+  ASSERT_TRUE(status.ok());
+
+  status = tdigest_->Add(*ctx_, test_digest_name, {0, 2, 3, 3, 10, 10, 10, 10});
+  ASSERT_TRUE(status.ok());
+
+  std::vector<double> cdf_vals = {0, 1, 2, 10};
+  redis::TDigestCDFResult result;
+  status = tdigest_->CDF(*ctx_, test_digest_name, cdf_vals, &result);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  std::vector<double> expected = {0.0625, 0.1842105263157895, 0.24342105263157895, 0.9375};
+  ASSERT_EQ(result.cdf_values.size(), expected.size());
+  for (size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_NEAR(result.cdf_values[i], expected[i], 1e-12);
+  }
+}
+
+TEST_F(RedisTDigestTest, CDFLastCentroidAndRightTail) {
+  std::string test_digest_name = "test_cdf_right_tail" + std::to_string(util::GetTimeStampMS());
+  bool exists = false;
+  auto status = tdigest_->Create(*ctx_, test_digest_name, {1}, &exists);
+  ASSERT_FALSE(exists);
+  ASSERT_TRUE(status.ok());
+
+  status = tdigest_->Add(*ctx_, test_digest_name, {0, 0, 6, 10});
+  ASSERT_TRUE(status.ok());
+
+  std::vector<double> cdf_vals = {0, 8, 9, 10, 11};
+  redis::TDigestCDFResult result;
+  status = tdigest_->CDF(*ctx_, test_digest_name, cdf_vals, &result);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  std::vector<double> expected = {0.125, 0.6785714285714286, 0.7142857142857143, 0.875, 1};
+  ASSERT_EQ(result.cdf_values.size(), expected.size());
+  for (size_t i = 0; i < expected.size(); ++i) {
+    EXPECT_NEAR(result.cdf_values[i], expected[i], 1e-12);
+  }
+}
+
+TEST_F(RedisTDigestTest, CDFAllInputsBelowMinimum) {
+  std::string test_digest_name = "test_cdf_all_below_minimum" + std::to_string(util::GetTimeStampMS());
+  bool exists = false;
+  auto status = tdigest_->Create(*ctx_, test_digest_name, {100}, &exists);
+  ASSERT_FALSE(exists);
+  ASSERT_TRUE(status.ok());
+
+  status = tdigest_->Add(*ctx_, test_digest_name, {1, 2});
+  ASSERT_TRUE(status.ok());
+
+  redis::TDigestCDFResult result;
+  status = tdigest_->CDF(*ctx_, test_digest_name, {-2, -1, 0}, &result);
+  ASSERT_TRUE(status.ok()) << status.ToString();
+
+  EXPECT_EQ(result.cdf_values, std::vector<double>({0, 0, 0}));
+}

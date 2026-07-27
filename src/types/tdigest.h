@@ -204,13 +204,23 @@ inline Status TDigestCDF(const std::vector<Centroid>& centroids, double centroid
     // only one centroid, min should equal max, and all inputs should be either less than, equal to,
     // or greater than the centroid mean
     const double width = centroids_max - centroids_min;
-    for (const auto& input : sorted_unique_inputs) {
+    for (const auto input : sorted_unique_inputs) {
+      if (input < centroids_min) {
+        sorted_result_weights.push_back(0.0);
+        continue;
+      }
+
+      if (input > centroids_max) {
+        sorted_result_weights.push_back(total_weight);
+        continue;
+      }
+
       if (input - centroids_min <= width) {
         // min and max are too close to do any viable interpolation, treat the centroid as a singleton
-        sorted_result_weights.push_back(0.5);
+        sorted_result_weights.push_back(total_weight / 2);
       } else {
         // interpolate if somehow we have weight > 0 and max != min, which should not happen in a valid tdigest
-        sorted_result_weights.push_back((input - centroids_min) / width);
+        sorted_result_weights.push_back((input - centroids_min) / width * total_weight);
       }
     }
   } else {
